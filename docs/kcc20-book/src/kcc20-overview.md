@@ -28,7 +28,7 @@ So the same token contract supports multiple ownership modes without changing th
 
 ## KCC20Minter
 
-`KCC20Minter` is a separate covenant that controls issuance against a particular KCC20 covenant instance.
+`KCC20Minter` is the controller covenant used by this example. It controls issuance against a particular KCC20 covenant instance.
 
 Its state is:
 
@@ -48,13 +48,28 @@ The field name `kcc20Covid` is just the name used in the example source. Functio
 
 That metadata lets the minter read and validate KCC20 state by template rather than blindly trusting that some output "looks like" a KCC20 output.
 
+## Controller Covenant Terminology
+
+This book uses **controller covenant** for the external policy covenant whose covenant ID owns a privileged KCC20 minter branch.
+
+In this book, **issuance** means the policy governing when new token supply may be created; **minting** means the concrete transaction-level act of creating that supply.
+
+In this example:
+
+- `A` is the KCC20 asset covenant ID
+- `C` is the controller covenant ID
+- `KCC20Minter` is one concrete controller covenant implementation
+- `owner` is the admin pubkey that signs controller actions
+
+The distinction matters. The KCC20 minter branch is not owned by the admin pubkey directly. It is owned by covenant ID `C`. The admin key authorizes the `KCC20Minter` script, and that script decides how its authority over asset `A` may be used.
+
 ## How They Fit Together
 
 The two contracts are meant to be read as one system.
 
 KCC20 is the asset contract. It defines what a token state looks like, how ownership works, and when supply may or may not change.
 
-KCC20Minter is the policy contract. It does not redefine what a KCC20 token is. Instead, it binds itself to one KCC20 covenant instance and restricts how that particular KCC20 branch may be expanded over time.
+KCC20Minter is the controller covenant. It does not redefine what a KCC20 token is. Instead, it binds itself to one KCC20 covenant instance and restricts how that particular KCC20 branch may be expanded over time.
 
 So the relationship is:
 
@@ -81,28 +96,31 @@ That is why covenant-ID ownership is so important in this example. It gives a co
 
 ### Lifecycle
 
-At a high level, the system is meant to work in two phases:
+At a high level, the system is meant to work in three phases:
 
-- a binding phase, where the minter learns which KCC20 covenant it controls
+- a minter genesis phase, where the controller covenant is created and receives covenant ID `C`
+- an asset genesis phase, where the KCC20 asset covenant is created with covenant ID `A`, while `C` binds itself to `A`
 - an issuance phase, where KCC20 and KCC20Minter are spent together and each checks its side of the rules
 
 The intended lifecycle is:
 
-1. Create an uninitialized `KCC20Minter`.
-2. Spend it through `init`.
-3. In the same transaction, create:
+1. Spend a plain funding UTXO into an uninitialized `KCC20Minter`.
+2. The minter genesis transaction creates the controller covenant ID `C` using normal covenant genesis hashing.
+3. Spend `C` through `init`.
+4. In the same asset genesis transaction, create:
    - a KCC20 minter branch with amount `0`
    - a new initialized minter output
-4. `init` stores the newly created KCC20 covenant ID in the minter state.
-5. Later, spend both contracts together:
+5. The KCC20 minter branch is owned by `C`.
+6. `init` stores the newly created KCC20 covenant ID `A` in the minter state.
+7. Later, spend both contracts together:
    - the KCC20 minter branch
    - the KCC20Minter output
-6. In each mint transaction, create:
+8. In each mint transaction, create:
    - a fresh zero-amount KCC20 minter branch
    - a separate KCC20 recipient output holding the newly minted amount
-   - the next KCC20Minter output with reduced allowance
-7. KCC20 authorizes the token transition.
-8. KCC20Minter verifies the minting rule and decrements its remaining allowance.
+   - the next KCC20Minter output with reduced issuance allowance
+9. KCC20 authorizes the token transition.
+10. KCC20Minter verifies the issuance rule and decrements its remaining issuance allowance.
 
 This means the token contract and the minter contract do not collapse into one script with one giant policy. They stay separate, and each one verifies the part of the transaction it is responsible for.
 
@@ -127,20 +145,28 @@ KCC20
 
 ## Lifecycle Diagram
 
-```text
-uninitialized minter
-        |
-        v
-init transaction
-        |
-        +--> creates zero-amount KCC20 minter branch
-        |
-        +--> creates initialized minter output bound to that KCC20
-        |
-        v
-later mint transactions spend both together
-        |
-        +--> recreate zero-amount minter branch
-        |
-        +--> create separate recipient token output
+```mermaid
+flowchart TD
+    F[Plain funding UTXO]
+
+    MG[minter_genesis_tx<br/>creates controller covenant C]
+    C0[C: KCC20Minter<br/>initialized = false<br/>kcc20Covid = placeholder]
+
+    AG[asset_genesis_tx<br/>spends C through init]
+    A0[A: KCC20 minter branch<br/>ownerIdentifier = C<br/>amount = 0]
+    C1[C: KCC20Minter<br/>initialized = true<br/>kcc20Covid = A]
+
+    MT[later mint transactions<br/>spend A and C together]
+    A1[A: recreated minter branch<br/>amount = 0]
+    R[KCC20 recipient branch<br/>newly minted amount]
+    C2[C: KCC20Minter<br/>reduced issuance allowance]
+
+    F --> MG --> C0 --> AG
+    AG --> A0
+    AG --> C1
+    A0 --> MT
+    C1 --> MT
+    MT --> A1
+    MT --> R
+    MT --> C2
 ```

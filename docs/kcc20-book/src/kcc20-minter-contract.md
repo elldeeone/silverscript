@@ -4,7 +4,7 @@ Source: `silverscript-lang/tests/examples/kcc20-minter.sil` [[Link]](https://git
 
 ## Full Source
 
-```sil
+```js
 contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
     byte[] templatePrefix, byte[] templateSuffix) {
@@ -33,7 +33,8 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     }
 
     function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
-        require(minterKcc20NewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+        require(minterKcc20NewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
         require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 
@@ -91,12 +92,12 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
 ## Purpose
 
-`KCC20Minter` is a companion covenant that controls minting for one KCC20 covenant instance.
+`KCC20Minter` is the example controller covenant for one KCC20 covenant instance.
 
-The key idea is that mint policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate covenant holds:
+The key idea is that issuance policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate controller covenant holds:
 
 - which KCC20 covenant it governs
-- how much issuance remains
+- how much issuance allowance remains
 - whether the cross-contract binding has already been initialized
 
 ## Constructor And State
@@ -115,7 +116,7 @@ The constructor takes:
 
 The state fields derived from those constructor args are:
 
-```sil
+```js
 byte[32] kcc20Covid = initKCC20Covid;
 int amount = initAmount;
 bool initialized = initInitialized;
@@ -127,7 +128,7 @@ The template-related constructor fields are not mutable state. They are contract
 
 The minter declares:
 
-```sil
+```js
 struct KCC20State {
     byte[32] ownerIdentifier;
     byte identifierType;
@@ -154,13 +155,13 @@ These values come from the KCC20 script with its encoded state region removed. C
 
 ## `calcInAmount`
 
-```sil
+```js
 function calcInAmount() : (int)
 ```
 
 This function reads the previous KCC20 state from the covenant input selected by:
 
-```sil
+```js
 OpCovInputIdx(kcc20Covid, 0)
 ```
 
@@ -174,21 +175,35 @@ This is how the minter learns the old token supply before minting.
 
 ## `checkMinterKcc20NewState`
 
-```sil
+```js
 function checkMinterKcc20NewState(KCC20State minterKcc20NewState)
 ```
 
-This validates the continuing minter-owned KCC20 branch.
+This validates the continuing controller-owned KCC20 minter branch.
 
 It enforces three things:
 
-- the branch must remain owned by the minter's `owner` value encoded as `byte[32]`
+- the branch must remain owned by the current `KCC20Minter` covenant ID
 - the branch must remain covenant-ID owned
 - the branch must remain marked as a minter
 
+The first check deliberately uses the active input's covenant ID:
+
+```js
+byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+require(minterKcc20NewState.ownerIdentifier == controllerId);
+```
+
+This separates two identities:
+
+- `owner` is the admin key that signs minter actions
+- `controllerId` is the covenant ID that owns the KCC20 minter branch
+
+So the admin key authorizes the controller, but the KCC20 branch remains owned by the controller covenant.
+
 Then it validates the actual output with:
 
-```sil
+```js
 validateOutputStateWithTemplate(
     OpCovOutputIdx(kcc20Covid, 0),
     minterKcc20NewState,
@@ -207,7 +222,7 @@ This is much safer than trusting an arbitrary output index or script shape.
 
 ## `checkRecipientKcc20NewState`
 
-```sil
+```js
 function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState)
 ```
 
@@ -224,16 +239,18 @@ That means each mint transaction has a fixed shape:
 
 The first entrypoint is:
 
-```sil
+```js
 #[covenant.singleton]
 function init(State prevState, State newState, sig s)
 ```
 
-This binds a previously uninitialized minter to a freshly created KCC20 covenant.
+This binds a previously uninitialized controller covenant to a freshly created KCC20 covenant.
+
+The controller covenant already has its own covenant ID before this entrypoint runs. In the bootstrap flow, a plain funding UTXO first creates the uninitialized controller covenant `C`. Then the asset genesis transaction spends `C` through `init`, creates the KCC20 asset covenant `A`, and recreates `C` as initialized and bound to `A`.
 
 Its key checks are:
 
-```sil
+```js
 require(!initialized);
 require(newState.kcc20Covid == OpOutputCovenantId(0));
 require(newState.amount == prevState.amount);
@@ -245,42 +262,51 @@ Interpretation:
 
 - the minter must not already be initialized
 - the new minter state must point at the covenant ID of output 0
-- the mint allowance is preserved during initialization
+- the issuance allowance is preserved during initialization
 - the new state flips `initialized` to true
 - the owner authorizes the operation
 
 The critical piece is `OpOutputCovenantId(0)`. That lets the minter learn the covenant ID of the KCC20 output created in the same transaction.
 
-Without that step there would be no secure way for the minter to bind itself to the exact KCC20 covenant instance it just created.
+Without this check, this single transaction would not prove that the initialized minter bound itself to the exact KCC20 covenant output created beside it.
 
 ## Initialization Diagram
 
 ```text
-before init:
-  initialized = false
-  kcc20Covid = placeholder
+plain funding utxo
+    |
+    v
+[minter genesis tx] -> C covenant id
+    |
+    v
+[asset genesis/init tx] -> A covenant id + C binds to A
 
-after init:
-  initialized = true
-  kcc20Covid = covenant ID of the newly created KCC20 output
+before asset genesis/init:
+  C.initialized = false
+  C.kcc20Covid = placeholder
+
+after asset genesis/init:
+  C.initialized = true
+  C.kcc20Covid = A
+  A.ownerIdentifier = C
 ```
 
 ## `mint`
 
 The second entrypoint is:
 
-```sil
+```js
 #[covenant.singleton]
 function mint(State prevState, State newState, sig s, KCC20State minterKcc20NewState, KCC20State recipientKcc20NewState)
 ```
 
-This is the issuance step.
+This is the transaction-level minting step that enforces the issuance policy.
 
 The checks break down into four groups.
 
 ### Minter state invariants
 
-```sil
+```js
 require(initialized);
 require(newState.amount >= 0);
 require(newState.initialized);
@@ -291,7 +317,7 @@ The minter must stay initialized, cannot go negative, and cannot switch to a dif
 
 ### KCC20 cardinality
 
-```sil
+```js
 require(OpCovOutputCount(kcc20Covid) == 2);
 require(OpCovInputCount(kcc20Covid) == 1);
 ```
@@ -300,7 +326,7 @@ The example only allows minting when exactly one KCC20 covenant input and two KC
 
 ### KCC20 template validation
 
-```sil
+```js
 checkMinterKcc20NewState(minterKcc20NewState);
 checkRecipientKcc20NewState(recipientKcc20NewState);
 ```
@@ -309,7 +335,7 @@ This ensures both supplied KCC20 successor states match the actual outputs in th
 
 ### Issuance accounting
 
-```sil
+```js
 int inAmount = calcInAmount();
 int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
 require(newState.amount == amount - mintedAmount);
@@ -320,9 +346,9 @@ This means:
 - compute previous KCC20 amount
 - compute the total amount in the two new KCC20 outputs
 - subtract the old amount to get the newly minted quantity
-- decrement the minter's remaining allowance by exactly that amount
+- decrement the minter's remaining issuance allowance by exactly that amount
 
-If someone tries to mint more than the allowance permits, the minter state cannot satisfy the final equality and the transaction fails.
+If someone tries to mint more than the issuance allowance permits, the minter state cannot satisfy the final equality and the transaction fails.
 
 ## Mint Accounting Diagram
 
@@ -331,8 +357,8 @@ mintedAmount
   = (new minter-branch amount + new recipient amount)
     - previous minter-branch amount
 
-new minter allowance
-  = old minter allowance - mintedAmount
+new issuance allowance
+  = old issuance allowance - mintedAmount
 ```
 
 ## Mint Shape Diagram
@@ -340,12 +366,12 @@ new minter allowance
 ```text
 before mint:
   KCC20 minter branch amount = old amount
-  KCC20Minter allowance = remaining budget
+  KCC20Minter issuance allowance = remaining budget
 
 after mint:
   KCC20 minter branch amount = 0
   KCC20 recipient branch amount = minted tokens for this transaction
-  KCC20Minter allowance = reduced by minted amount
+  KCC20Minter issuance allowance = reduced by minted amount
 ```
 
 ## Why A Separate Minter Covenant Matters
@@ -355,4 +381,4 @@ This design cleanly demonstrates covenant composition.
 - KCC20 knows how to authorize token state transitions.
 - KCC20Minter knows how to constrain issuance.
 
-KCC20 can be reused with different issuance policies because mint control is externalized into another covenant rather than welded into the token contract itself.
+KCC20 can be reused with different issuance policies because issuance control is externalized into another covenant rather than welded into the token contract itself.

@@ -13,7 +13,7 @@ These examples are easiest to understand as a small set of recurring stories:
 - non-minter branches must conserve supply
 - minter branches can expand or shrink supply
 - ownership can belong to a key, a script hash, or another covenant
-- a separate covenant can bind itself to a token covenant and control future minting
+- a separate covenant can bind itself to a token covenant and control future issuance
 
 ## 1. KCC20 Behaves Like A Fungible Token State Machine
 
@@ -62,7 +62,7 @@ That is much more expressive than a token model that only understands pubkeys.
 
 ## 5. Another Covenant Can Own KCC20
 
-A KCC20 branch can be owned by a covenant ID, and that ownership mode is what allows KCC20Minter to control minting.
+A KCC20 branch can be owned by a covenant ID, and that ownership mode is what allows KCC20Minter to control issuance.
 
 This is the bridge from "programmable ownership" to "cross-contract policy".
 
@@ -73,17 +73,29 @@ The two-contract example shows a clean split:
 - KCC20 defines token semantics
 - KCC20Minter defines issuance policy
 
-This matters because it keeps the token contract reusable. Different issuance policies could be modeled by different companion covenants.
+This matters because it keeps the token contract reusable. Different issuance policies could be modeled by different controller covenants.
 
 ## 7. Initialization Can Bind Contracts Together
 
-One of the most important properties proven by the examples is that a contract can initialize itself against another covenant created in the same transaction.
+One of the most important properties proven by the examples is that a controller covenant can be created first, then initialize itself against an asset covenant created in the next transaction.
 
 That is what `init` in KCC20Minter does when it records:
 
 - the covenant ID of the newly created KCC20 output
 
-This is the mechanism that binds the minter to one specific KCC20 instance.
+The important shape is:
+
+```text
+plain funding utxo
+    |
+    v
+[minter genesis tx] -> C covenant id
+    |
+    v
+[asset genesis/init tx] -> A covenant id + C binds to A
+```
+
+This is the mechanism that binds the minter to one specific KCC20 instance while preserving a concrete genesis preimage for both covenant IDs.
 
 ## 8. Template Validation Makes Cross-Contract Checks Safer
 
@@ -97,14 +109,14 @@ This is critical because it means the minter is validating a real KCC20 state tr
 
 ## 9. The Issuance Budget Is Enforced Across Transactions
 
-The KCC20Minter flow walks through several minting steps and shows that:
+The KCC20Minter flow walks through several mint transactions and shows that:
 
-- each successful mint reduces remaining allowance
+- each successful mint reduces remaining issuance allowance
 - each successful mint keeps a zero-amount KCC20 minter branch alive for the next mint
 - each successful mint creates a separate ordinary KCC20 recipient output for the newly minted amount
 - those recipient outputs can later be spent like ordinary KCC20 branches
-- minting continues to work while allowance remains
-- minting fails when the requested increase would overspend the budget
+- mint transactions continue to work while issuance allowance remains
+- mint transactions fail when the requested increase would overspend the budget
 
 This is the clearest statement of what KCC20Minter is for.
 
