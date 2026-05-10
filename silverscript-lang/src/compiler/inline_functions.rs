@@ -360,6 +360,10 @@ impl<'i, 'd> Inliner<'i, 'd> {
         self.functions.get(name).cloned().filter(|function| !function.entrypoint) // TODO: Store this information in a separate set for efficiency
     }
 
+    fn tuple_field_index(field: &str) -> Option<usize> {
+        (!field.is_empty() && field.chars().all(|ch| ch.is_ascii_digit())).then(|| field.parse().ok()).flatten()
+    }
+
     fn inline_call(
         &mut self,
         function: &FunctionAst<'i>,
@@ -477,6 +481,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
             ExprKind::Call { name, args, name_span } => {
                 let (mut prelude, args) = self.lower_exprs(args, scope, visited_functions)?;
                 if let Some(function) = self.inline_target(name) {
+                    if function.returns_tuple {
+                        return Err(CompilerError::Unsupported(format!(
+                            "function '{}' returns a tuple and cannot be used directly in expressions; access a tuple field instead",
+                            function.name
+                        )));
+                    }
                     if function.return_types.len() != 1 {
                         return Err(CompilerError::Unsupported(format!(
                             "function '{}' with multiple return values cannot be used in expressions",
@@ -591,6 +601,37 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 Ok((prelude, Expr::new(ExprKind::StateObject(lowered_fields), span)))
             }
             ExprKind::FieldAccess { source, field, field_span } => {
+                if let Some(index) = Self::tuple_field_index(field)
+                    && let ExprKind::Call { name, args, name_span } = &source.kind
+                    && let Some(function) = self.inline_target(name)
+                {
+                    if !function.returns_tuple {
+                        return Err(CompilerError::Unsupported(format!("function '{}' does not return a tuple", function.name)));
+                    }
+                    if index >= function.return_types.len() {
+                        return Err(CompilerError::Unsupported(format!(
+                            "tuple index {index} out of bounds for function '{}'",
+                            function.name
+                        )));
+                    }
+                    let temp_names = function.return_types.iter().map(|_| self.fresh_name(name)).collect::<Vec<_>>();
+                    let bindings = function
+                        .return_types
+                        .iter()
+                        .zip(temp_names.iter())
+                        .map(|(type_ref, temp_name)| ParamAst {
+                            type_ref: type_ref.clone(),
+                            name: temp_name.clone(),
+                            span,
+                            type_span: *name_span,
+                            name_span: *name_span,
+                        })
+                        .collect::<Vec<_>>();
+                    let prelude = self.inline_call(&function, args, Some(&bindings), scope, visited_functions, span)?;
+                    let selected_name = temp_names[index].clone();
+                    self.debug_recorder.record_visible_name(&selected_name, &format!("{}.{}", function.name, index));
+                    return Ok((prelude, Expr::identifier(selected_name)));
+                }
                 let (prelude, source) = self.lower_expr(source, scope, visited_functions)?;
                 Ok((
                     prelude,

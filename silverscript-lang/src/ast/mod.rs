@@ -103,6 +103,8 @@ pub struct FunctionAst<'i> {
     pub entrypoint: bool,
     #[serde(default)]
     pub return_types: Vec<TypeRef>,
+    #[serde(default)]
+    pub returns_tuple: bool,
     pub body: Vec<Statement<'i>>,
     #[serde(skip_deserializing)]
     pub return_type_spans: Vec<Span<'i>>,
@@ -777,9 +779,14 @@ impl SourceFormatter {
         signature.push_str(&format_params(&function.params));
         signature.push(')');
         if !function.return_types.is_empty() {
-            signature.push_str(": (");
-            signature.push_str(&function.return_types.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "));
-            signature.push(')');
+            if function.returns_tuple {
+                signature.push_str(": (");
+                signature.push_str(&function.return_types.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "));
+                signature.push(')');
+            } else {
+                signature.push_str(": ");
+                signature.push_str(&function.return_types[0].type_name());
+            }
         }
         signature.push_str(" {");
 
@@ -801,7 +808,7 @@ impl SourceFormatter {
             }
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
                 self.line(&format!(
-                    "{} {}, {} {} = {};",
+                    "({} {}, {} {}) = {};",
                     left_type_ref.type_name(),
                     left_name,
                     right_type_ref.type_name(),
@@ -964,7 +971,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::New { name, args, .. } => format!("new {}({})", name, format_expr_list(args)),
         ExprKind::Split { source, index, part, .. } => {
             format!(
-                "{}.split({})[{}]",
+                "{}.split({}).{}",
                 format_expr_with_prec(source, PREC_POSTFIX, false),
                 format_expr(index),
                 match part {
@@ -1352,10 +1359,12 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     let params = parse_typed_parameter_list(params_pair)?;
 
     let mut return_types = Vec::new();
+    let mut returns_tuple = false;
     let mut return_type_spans = Vec::new();
     if let Some(next) = inner.peek() {
         if next.as_rule() == Rule::return_type_list {
             let return_pair = inner.next().expect("checked");
+            returns_tuple = return_pair.as_str().trim_start_matches(':').trim_start().starts_with('(');
             let (types, spans) = parse_return_type_list(return_pair)?;
             return_types = types;
             return_type_spans = spans;
@@ -1377,7 +1386,19 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
     let body_span = body_span.unwrap_or(span);
 
-    Ok(FunctionAst { name, attributes, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+    Ok(FunctionAst {
+        name,
+        attributes,
+        entrypoint,
+        params,
+        return_types,
+        returns_tuple,
+        return_type_spans,
+        body,
+        span,
+        name_span,
+        body_span,
+    })
 }
 
 fn parse_function_attribute<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeAst<'i>, CompilerError> {
@@ -1924,23 +1945,12 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
                 let index_expr = parse_expression(index_pair)?;
-                let index_span = index_expr.span;
                 let span = expr.span.join(&postfix_span);
-                if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
-                    let part = match index_expr.kind {
-                        ExprKind::Int(0) => SplitPart::Left,
-                        ExprKind::Int(1) => SplitPart::Right,
-                        _ => {
-                            return Err(CompilerError::Unsupported("split() index must be 0 or 1".to_string()).with_span(&index_span));
-                        }
-                    };
-                    expr = Expr::new(
-                        ExprKind::Split { source: source.clone(), index: split_index.clone(), part, span: *split_span },
-                        span,
-                    );
-                } else {
-                    expr = Expr::new(ExprKind::ArrayIndex { source: Box::new(expr), index: Box::new(index_expr) }, span);
+                if matches!(&expr.kind, ExprKind::Split { .. }) {
+                    return Err(CompilerError::Unsupported("split() results must be accessed with .0 or .1".to_string())
+                        .with_span(&postfix_span));
                 }
+                expr = Expr::new(ExprKind::ArrayIndex { source: Box::new(expr), index: Box::new(index_expr) }, span);
             }
             Rule::unary_suffix => {
                 let kind = match postfix.as_str() {
@@ -1950,6 +1960,33 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 };
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
+            }
+            Rule::tuple_field_access => {
+                let raw = postfix.as_str().trim().trim_start_matches('.');
+                let index = raw
+                    .parse::<usize>()
+                    .map_err(|_| CompilerError::Unsupported(format!("invalid tuple field index '{raw}'")).with_span(&postfix_span))?;
+                let span = expr.span.join(&postfix_span);
+                if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
+                    let part = match index {
+                        0 => SplitPart::Left,
+                        1 => SplitPart::Right,
+                        _ => {
+                            return Err(
+                                CompilerError::Unsupported("split() index must be 0 or 1".to_string()).with_span(&postfix_span)
+                            );
+                        }
+                    };
+                    expr = Expr::new(
+                        ExprKind::Split { source: source.clone(), index: split_index.clone(), part, span: *split_span },
+                        span,
+                    );
+                } else {
+                    expr = Expr::new(
+                        ExprKind::FieldAccess { source: Box::new(expr), field: index.to_string(), field_span: postfix_span },
+                        span,
+                    );
+                }
             }
             Rule::field_access => {
                 if matches!(&expr.kind, ExprKind::Introspection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx") {
