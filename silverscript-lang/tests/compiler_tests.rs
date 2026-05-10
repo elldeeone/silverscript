@@ -1289,6 +1289,66 @@ fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
 }
 
 #[test]
+fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_array_type() {
+    let cases = [
+        (
+            "literal values do not match declared element type",
+            r#"
+                int[_] x = [1, true];
+            "#,
+            "array element type mismatch",
+        ),
+        (
+            "identifier is unknown",
+            r#"
+                int[_] x = y;
+            "#,
+            "cannot infer fixed array size from variable 'x'",
+        ),
+        (
+            "identifier is not an array",
+            r#"
+                int y = 1;
+                int[_] x = y;
+            "#,
+            "cannot infer fixed array size from variable 'x'",
+        ),
+        (
+            "identifier has a different array element type",
+            r#"
+                bool[2] y = [true, false];
+                int[_] x = y;
+            "#,
+            "cannot infer fixed array size from variable 'x'",
+        ),
+        (
+            "identifier has a dynamic array size",
+            r#"
+                int[] y = [1, 2];
+                int[_] x = y;
+            "#,
+            "cannot infer fixed array size from variable 'x'",
+        ),
+    ];
+
+    for (name, body, expected_error) in cases {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entrypoint function main() {{
+                        {body}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should fail"));
+        assert!(err.to_string().contains(expected_error), "{name}: expected error containing '{expected_error}', got: {err}");
+    }
+}
+
+#[test]
 fn infers_fixed_sizes_for_multiple_array_element_types() {
     let source = r#"
         contract Arrays() {
@@ -1316,6 +1376,71 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
         compile_contract(source, &[], CompileOptions::default()).is_ok(),
         "type[_] should infer fixed sizes across supported element types"
     );
+}
+
+#[test]
+fn infers_fixed_array_size_from_function_call_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            function makeArray(): int[3] {
+                return [1, 2, 3];
+            }
+
+            entrypoint function main() {
+                int[_] x = makeArray();
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from function call returning int[3]");
+}
+
+#[test]
+fn infers_fixed_array_size_from_array_concat_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[2] left = [1, 2];
+                int[1] right = [3];
+                int[_] x = left + right;
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from int[2] + int[1]");
+}
+
+#[test]
+fn infers_fixed_array_size_from_ternary_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(bool flag) {
+                int[3] left = [1, 2, 3];
+                int[3] right = [4, 5, 6];
+                int[_] x = flag ? left : right;
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from ternary branches typed int[3]");
+}
+
+#[test]
+fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[_] x = [1, 2, 3];
+                int[_] y = x;
+                require(y.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] y should infer from previously inferred int[_] x");
 }
 
 #[test]
