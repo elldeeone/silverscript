@@ -1,12 +1,15 @@
 use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_contract_mut};
 use silverscript_lang::ast::{ContractAst, Expr, FunctionAst, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::compiler::{COVENANT_ENTRYPOINT_AUTH_PREFIX, CompileOptions, compile_contract};
 use silverscript_lang::span::Span;
 use std::collections::HashSet;
 
 fn canonicalize_generated_name(name: &str) -> String {
     if let Some(rest) = name.strip_prefix("__covenant_policy_") {
         return format!("covenant_policy_{rest}");
+    }
+    if let Some(rest) = name.strip_prefix(&format!("{COVENANT_ENTRYPOINT_AUTH_PREFIX}_")) {
+        return rest.to_string();
     }
     if let Some(rest) = name.strip_prefix("__cov_") {
         return format!("cov_{rest}");
@@ -80,6 +83,8 @@ macro_rules! fixture_ast_test {
 }
 
 fixture_ast_test!(lowers_auth_groups_single, [Expr::int(4)]);
+fixture_ast_test!(lowers_stateless_auth_verification, [Expr::int(4)]);
+fixture_ast_test!(lowers_stateless_cov_verification, [Expr::int(2), Expr::int(4)]);
 fixture_ast_test!(lowers_cov_to_leader_and_delegate_expected_wrapper_ast, [Expr::int(2), Expr::int(3)]);
 fixture_ast_test!(lowers_singleton_sugar_verification_to_single_state_validation, [Expr::int(7)]);
 fixture_ast_test!(lowers_singleton_sugar_verification_termination_allowed_to_state_array_validation, [Expr::int(7)]);
@@ -88,9 +93,11 @@ fixture_ast_test!(lowers_transition_array_return_to_exact_output_count_match, [E
 fixture_ast_test!(lowers_singleton_transition_with_termination_allowed_to_array_cardinality_checks, [Expr::int(10)]);
 fixture_ast_test!(lowers_auth_verification_groups_multiple_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_auth_verification_groups_single_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
-fixture_ast_test!(lowers_auth_transition_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+fixture_ast_test!(lowers_auth_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_verification_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+fixture_ast_test!(lowers_cov_transition_single_state_return, [Expr::int(2), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+fixture_ast_test!(lowers_cov_transition_to_one_array_state_return, [Expr::int(2), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_single_field_state, [Expr::int(2), Expr::int(2), Expr::int(10)]);
 fixture_ast_test!(lowers_inferred_auth_verification_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(
@@ -132,7 +139,7 @@ fn covers_attribute_config_combinations_with_two_field_state() {
                 require(new_states.length == new_states.length);
             }
 
-            #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+            #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function auth_transition(State prev_state, int fee) : (State) {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
