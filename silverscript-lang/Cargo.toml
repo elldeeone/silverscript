@@ -13,8 +13,13 @@ path = "src/lib.rs"
 
 [dependencies]
 kaspa-consensus-core.workspace = true
+kaspa-addresses.workspace = true
+kaspa-bip32.workspace = true
+kaspa-rpc-core.workspace = true
 kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
+kaspa-wallet-keys.workspace = true
+kaspa-wrpc-client.workspace = true
 blake2b_simd.workspace = true
 indexmap.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -28,6 +33,6 @@ serde_json = "1.0"
 clap = { version = "4.5.60", features = ["derive"] }
 faster-hex = "0.10"
 semver = "1.0"
+tokio.workspace = true
 
 [dev-dependencies]
-kaspa-addresses.workspace = true

@@ -1,0 +1,32 @@
+pragma silverscript ^0.1.0;
+
+contract DoomState(
+    byte[32] init_game_id,
+    byte[32] init_session_key_hash,
+    int init_tick,
+    byte[32] init_state_hash,
+    int init_state_len,
+    byte[8] init_ticcmd
+) {
+    byte[32] game_id = init_game_id;
+    byte[32] session_key_hash = init_session_key_hash;
+    int tick = init_tick;
+    byte[32] state_hash = init_state_hash;
+    int state_len = init_state_len;
+    byte[8] ticcmd = init_ticcmd;
+
+    #[covenant.singleton(mode = transition)]
+    function advance(State prev_state, byte[8] next_ticcmd, State next_state, pubkey session_pk, sig session_sig) : (State) {
+        require(blake2b(session_pk) == prev_state.session_key_hash);
+        require(checkSig(session_sig, session_pk));
+
+        require(prev_state.game_id == next_state.game_id);
+        require(prev_state.session_key_hash == next_state.session_key_hash);
+        require(next_state.tick == prev_state.tick + 1);
+        require(next_state.ticcmd == next_ticcmd);
+        require(prev_state.state_len == 96);
+        require(next_state.state_len == 96);
+
+        return(next_state);
+    }
+}

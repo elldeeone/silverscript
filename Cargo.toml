@@ -19,8 +19,12 @@ rust-version = "1.85.0"
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
 kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
 kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
+kaspa-bip32 = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
+kaspa-rpc-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
 kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
 kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
+kaspa-wallet-keys = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
+kaspa-wrpc-client = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
 blake2b_simd = "1.0.2"
 indexmap = "2.7.0"
 rand = "0.8.5"
@@ -30,3 +34,4 @@ secp256k1 = { version = "0.29.0", features = [
     "serde",
 ] }
 thiserror = "1.0.61"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

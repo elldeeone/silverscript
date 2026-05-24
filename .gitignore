@@ -4,3 +4,10 @@ target
 .codex/*
 *.bak
 docs/kcc20-book/book
+.env
+.env.*
+secrets/
+wallets/
+.doom-tn10-bridge-state.json
+.doom-tn10-bridge-events.jsonl
+vendor/doom-wasm/src/*.wad
