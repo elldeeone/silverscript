@@ -7330,6 +7330,367 @@ fn assert_compiled_body(source: &str, body: Vec<u8>) {
 }
 
 #[test]
+fn checksig_result_can_be_used_in_bool_comparisons() {
+    let source = r#"
+        contract P2PK(sig signature, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSig(signature, publicKey) == true);
+            }
+        }
+    "#;
+    compile_contract(source, &[vec![0x11u8; 65].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+        .expect("checkSig bool comparison should compile");
+}
+
+#[test]
+fn checksigfromstack_lowers_to_matching_opcode() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 64];
+    let digest = vec![0x33; 32];
+    let public_key = vec![0x22; 32];
+    let compiled = compile_contract(
+        source,
+        &[signature.clone().into(), digest.clone().into(), public_key.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&digest)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigFromStack)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn checksigfromstackecdsa_lowers_to_matching_opcode() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 64];
+    let digest = vec![0x33; 32];
+    let public_key = vec![0x22; 33];
+    let compiled = compile_contract(
+        source,
+        &[signature.clone().into(), digest.clone().into(), public_key.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&digest)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigFromStackECDSA)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
+    let raw_message = r#"
+        contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, message, publicKey));
+            }
+        }
+    "#;
+    let raw_message_err = compile_contract(
+        raw_message,
+        &[vec![0x11u8; 64].into(), b"authorize".to_vec().into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("raw byte[] message should fail");
+    assert!(raw_message_err.to_string().contains("argument 'digest' expects byte[32]"), "unexpected error: {raw_message_err}");
+
+    let local_size_identifier = r#"
+        contract DataSig(datasig signature, pubkey publicKey) {
+            entrypoint function main() {
+                int N = 32;
+                byte[N] digest = 0x010203;
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let local_size_identifier_err =
+        compile_contract(local_size_identifier, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+            .expect_err("local runtime size identifier should not satisfy byte[32]");
+    assert!(
+        local_size_identifier_err.to_string().contains("argument 'digest' expects byte[32]"),
+        "unexpected error: {local_size_identifier_err}"
+    );
+
+    let contract_constant_size = r#"
+        contract DataSig(datasig signature, pubkey publicKey) {
+            int constant N = 32;
+
+            entrypoint function main(byte[N] digest) {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    compile_contract(contract_constant_size, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+        .expect("contract constants should satisfy byte[32]");
+
+    let signature_literal = format!("0x{}", "11".repeat(64));
+    let digest_literal = format!("0x{}", "33".repeat(32));
+    let public_key_literal = format!("0x{}", "22".repeat(32));
+    let literal_args = format!(
+        r#"
+        contract DataSig() {{
+            entrypoint function main() {{
+                require(checkSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
+            }}
+        }}
+    "#
+    );
+    compile_contract(&literal_args, &[], CompileOptions::default()).expect("literal datasig, digest, and pubkey args should compile");
+
+    let byte_pubkey_variable = format!(
+        r#"
+        contract DataSig(datasig signature) {{
+            entrypoint function main() {{
+                byte[32] digest = {digest_literal};
+                byte[32] publicKey = {public_key_literal};
+                require(checkSigFromStack(signature, digest, publicKey));
+            }}
+        }}
+    "#
+    );
+    let byte_pubkey_variable_err = compile_contract(&byte_pubkey_variable, &[vec![0x11u8; 64].into()], CompileOptions::default())
+        .expect_err("byte[32] variable should not be promoted to pubkey");
+    assert!(
+        byte_pubkey_variable_err.to_string().contains("argument 'publicKey' expects pubkey"),
+        "unexpected error: {byte_pubkey_variable_err}"
+    );
+
+    let tx_signature = r#"
+        contract DataSig(sig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let tx_signature_err = compile_contract(
+        tx_signature,
+        &[vec![0x11u8; 65].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("65-byte sig should fail");
+    assert!(tx_signature_err.to_string().contains("argument 'signature' expects datasig"), "unexpected error: {tx_signature_err}");
+
+    let schnorr_pubkey_for_ecdsa = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let schnorr_pubkey_err = compile_contract(
+        schnorr_pubkey_for_ecdsa,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("32-byte Schnorr pubkey should fail for ECDSA");
+    assert!(
+        schnorr_pubkey_err.to_string().contains("argument 'publicKey' expects byte[33]"),
+        "unexpected error: {schnorr_pubkey_err}"
+    );
+}
+
+#[test]
+fn checksigfromstack_result_is_checked_as_bool() {
+    let bool_assignment = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                bool ok = checkSigFromStack(signature, digest, publicKey);
+                require(ok);
+            }
+        }
+    "#;
+    compile_contract(
+        bool_assignment,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("bool assignment should compile");
+
+    let byte_assignment = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                byte[32] ok = checkSigFromStack(signature, digest, publicKey);
+                require(true);
+            }
+        }
+    "#;
+    let byte_assignment_err = compile_contract(
+        byte_assignment,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("builtin bool result should not assign to byte[32]");
+    assert!(byte_assignment_err.to_string().contains("variable 'ok' expects byte[32]"), "unexpected error: {byte_assignment_err}");
+
+    let bool_return = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            function ok() : bool {
+                return checkSigFromStack(signature, digest, publicKey);
+            }
+
+            entrypoint function main() {
+                require(ok());
+            }
+        }
+    "#;
+    compile_contract(
+        bool_return,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("bool return should compile");
+
+    let byte_return = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            function bad() : byte[32] {
+                return checkSigFromStack(signature, digest, publicKey);
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+    let byte_return_err = compile_contract(
+        byte_return,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("builtin bool result should not return byte[32]");
+    assert!(byte_return_err.to_string().contains("return value expects byte[32]"), "unexpected error: {byte_return_err}");
+}
+
+#[test]
+fn checksigfromstack_executes_schnorr_signature_verification() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32]).unwrap();
+    let public_key = keypair.x_only_public_key().0.serialize().to_vec();
+    let digest = Hash::from_bytes([3u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.sign_schnorr(message).as_ref().to_vec();
+
+    let run = |signature: Vec<u8>| {
+        let compiled = compile_contract(
+            source,
+            &[signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+        run_script_with_selector(compiled.script, selector)
+    };
+
+    assert!(run(valid_signature.clone()).is_ok(), "valid Schnorr data signature should pass");
+    let mut forged_signature = valid_signature;
+    forged_signature[0] ^= 0x01;
+    assert!(run(forged_signature).is_err(), "forged Schnorr data signature should fail");
+}
+
+#[test]
+fn checksigfromstack_false_result_can_be_asserted() {
+    let source = r#"
+        contract DataSig() {
+            entrypoint function main(datasig signature, byte[32] digest, pubkey publicKey) {
+                require(!checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32]).unwrap();
+    let public_key = keypair.x_only_public_key().0.serialize().to_vec();
+    let digest = Hash::from_bytes([3u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.sign_schnorr(message).as_ref().to_vec();
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let run = |signature: Vec<u8>| {
+        let sigscript = compiled
+            .build_sig_script("main", vec![signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()])
+            .expect("sigscript builds");
+        run_script_with_sigscript(compiled.script.clone(), sigscript)
+    };
+
+    let valid_result = run(valid_signature);
+    assert!(valid_result.is_err(), "valid Schnorr data signature should fail the negated assertion");
+    let zero_sig_result = run(vec![0u8; 64]);
+    assert!(zero_sig_result.is_ok(), "zero Schnorr data signature should pass the negated assertion: {zero_sig_result:?}");
+}
+
+#[test]
+fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[9u8; 32]).unwrap();
+    let public_key = keypair.public_key().serialize().to_vec();
+    let digest = Hash::from_bytes([5u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.secret_key().sign_ecdsa(message).serialize_compact().to_vec();
+
+    let run = |signature: Vec<u8>| {
+        let compiled = compile_contract(
+            source,
+            &[signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+        run_script_with_selector(compiled.script, selector)
+    };
+
+    assert!(run(valid_signature.clone()).is_ok(), "valid ECDSA data signature should pass");
+    let mut forged_signature = valid_signature;
+    forged_signature[0] ^= 0x01;
+    assert!(run(forged_signature).is_err(), "forged ECDSA data signature should fail");
+}
+
+#[test]
 fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
     let cases = [(("=="), OpNumEqual), (("!="), OpNumNotEqual)];
 
