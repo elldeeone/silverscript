@@ -1534,3 +1534,11 @@ fn compiles_many_assignments_example_under_500_bytes() {
     // variable should be stored on the stack once and reused by later steps.
     assert!(compiled.script.len() < 500, "long.sil should compile to less than 500 bytes, got {}", compiled.script.len());
 }
+
+#[test]
+fn compiles_g16_verify_example() {
+    let source = load_example_source("g16_verify.sil");
+
+    compile_contract(&source, &[vec![0x01u8].into(), vec![0x02u8].into(), vec![0x03u8; 32].into()], CompileOptions::default())
+        .expect("g16 verify example should compile");
+}

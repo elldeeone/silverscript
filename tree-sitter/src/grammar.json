@@ -1843,12 +1843,25 @@
         }
       ]
     },
+    "qualified_call_target": {
+      "type": "STRING",
+      "value": "g16.verify"
+    },
     "function_call": {
       "type": "SEQ",
       "members": [
         {
-          "type": "SYMBOL",
-          "name": "identifier"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "qualified_call_target"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "identifier"
+            }
+          ]
         },
         {
           "type": "SYMBOL",

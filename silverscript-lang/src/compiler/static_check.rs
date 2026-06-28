@@ -1381,6 +1381,18 @@ fn validate_builtin_call<'i>(
         // TODO: Use constants for all builtins
         "checkSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
         "checkSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        "g16.verify" => {
+            return validate_g16_verify_call(
+                args,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                constants,
+                functions,
+                contract_fields,
+            );
+        }
         _ => return Ok(()),
     };
     if args.len() != expected_args.len() {
@@ -1403,9 +1415,56 @@ fn validate_builtin_call<'i>(
     Ok(())
 }
 
+fn validate_g16_verify_call<'i>(
+    args: &[Expr<'i>],
+    env: &HashMap<String, Expr<'i>>,
+    prefer_env_for_comparison: &HashSet<String>,
+    types: &HashMap<String, String>,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<(), CompilerError> {
+    if args.len() < 2 {
+        return Err(CompilerError::Unsupported(
+            "g16.verify() expects at least 2 arguments (verifyingKey, proof, ...publicInputs)".to_string(),
+        ));
+    }
+
+    let expected_bytes = parse_type_ref("byte[]")?;
+    for (arg, arg_name) in args[..2].iter().zip(["verifyingKey", "proof"]) {
+        let actual_type =
+            infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+                .ok_or_else(|| CompilerError::Unsupported(format!("g16.verify() argument '{arg_name}' expects byte[]")))?;
+        if !is_type_assignable_ref(&actual_type, &expected_bytes, constants) && !expr_matches_type_ref(arg, &expected_bytes) {
+            return Err(CompilerError::Unsupported(format!(
+                "g16.verify() argument '{arg_name}' expects byte[], got {}",
+                type_name_from_ref(&actual_type)
+            )));
+        }
+    }
+
+    let expected_public_input = parse_type_ref("byte[32]")?;
+    for (index, arg) in args[2..].iter().enumerate() {
+        let actual_type =
+            infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+                .ok_or_else(|| CompilerError::Unsupported(format!("g16.verify() public input {index} expects byte[32]")))?;
+        if !is_type_assignable_ref(&actual_type, &expected_public_input, constants)
+            && !expr_matches_type_ref(arg, &expected_public_input)
+        {
+            return Err(CompilerError::Unsupported(format!(
+                "g16.verify() public input {index} expects byte[32], got {}",
+                type_name_from_ref(&actual_type)
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     match name {
-        "checkSigFromStack" | "checkSigFromStackECDSA" => parse_type_ref("bool").ok(),
+        "checkSigFromStack" | "checkSigFromStackECDSA" | "g16.verify" => parse_type_ref("bool").ok(),
         _ => None,
     }
 }

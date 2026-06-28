@@ -98,6 +98,21 @@ contract Advanced(int limit, pubkey owner) {
 }
 
 #[test]
+fn formats_qualified_builtin_call_target() {
+    let source = r#"contract Groth16(byte[] vk, byte[] proof, byte[32] publicInput) {
+    entrypoint function main() {
+        require(g16.verify(vk, proof, publicInput));
+    }
+}
+"#;
+
+    let ast = parse_contract_ast(source).expect("parse succeeds");
+    let formatted = format_contract_ast(&ast);
+
+    assert!(formatted.contains("require(g16.verify(vk, proof, publicInput));"));
+}
+
+#[test]
 fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
     let source = r#"contract ExactBasic() {
     int constant LIMIT = 3;

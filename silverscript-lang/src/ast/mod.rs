@@ -2166,11 +2166,11 @@ fn parse_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
 fn parse_function_call_parts<'i>(pair: Pair<'i, Rule>) -> Result<(Identifier<'i>, Vec<Expr<'i>>), CompilerError> {
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
+    let name = Identifier { name: name_pair.as_str().to_string(), span: Span::from(name_pair.as_span()) };
     let args = match inner.next() {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
     };
-    let name = parse_identifier(name_pair)?;
     Ok((name, args))
 }
 

@@ -65,7 +65,8 @@ require_message = { StringLiteral }
 
 console_parameter_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
-function_call = { Identifier ~ expression_list }
+qualified_call_target = { "g16.verify" }
+function_call = { (qualified_call_target | Identifier) ~ expression_list }
 expression_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
 expression = _{ conditional }

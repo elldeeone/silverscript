@@ -343,7 +343,10 @@ export default grammar({
         ")",
       ),
 
-    function_call: ($) => seq($.identifier, $.expression_list),
+    qualified_call_target: (_) => "g16.verify",
+
+    function_call: ($) =>
+      seq(choice($.qualified_call_target, $.identifier), $.expression_list),
 
     expression_list: ($) => seq("(", optional(commaSep($.expression)), ")"),
 

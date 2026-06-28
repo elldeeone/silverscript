@@ -12,6 +12,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
+use kaspa_txscript::zk_precompiles::tags::ZkTag;
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
@@ -29,6 +30,35 @@ fn script_builder() -> ScriptBuilder {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
 }
 
+#[derive(Clone)]
+struct Groth16Fixture {
+    vk: Vec<u8>,
+    proof: Vec<u8>,
+    public_inputs: Vec<Vec<u8>>,
+}
+
+fn hex_bytes(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0, "hex string length must be even");
+    (0..value.len()).step_by(2).map(|index| u8::from_str_radix(&value[index..index + 2], 16).expect("fixture hex decodes")).collect()
+}
+
+fn groth16_fixture() -> Groth16Fixture {
+    let vk = hex_bytes(
+        "e2f26dbea299f5223b646cb1fb33eadb059d9407559d7441dfd902e3a79a4d2dabb73dc17fbc13021e2471e0c08bd67d8401f52b73d6d07483794cad4778180e0c06f33bbc4c79a9cadef253a68084d382f17788f885c9afd176f7cb2f036789edf692d95cbdde46ddda5ef7d422436779445c5e66006a42761e1f12efde0018c212f3aeb785e49712e7a9353349aaf1255dfb31b7bf60723a480d9293938e1933033e7fea1f40604eaacf699d4be9aacc577054a0db22d9129a1728ff85a01a1c3af829b62bf4914c0bcf2c81a4bd577190eff5f194ee9bac95faefd53cb0030600000000000000e43bdc655d0f9d730535554d9caa611ddd152c081a06a932a8e1d5dc259aac123f42a188f683d869873ccc4c119442e57b056e03e2fa92f2028c97bc20b9078747c30f85444697fdf436e348711c011115963f855197243e4b39e6cbe236ca8ba7f2042e11f9255afbb6c6e2c3accb88e401f2aac21c097c92b3fbdb99f98a9b0dcd6c075ada6ed0ddfece1d4a2d005f61a7d5df0b75c18a5b2374d64e495fab93d4c4b1200394d5253cce2f25a59b862ee8e4cd43686603faa09d5d0d3c1c8f",
+    );
+    let proof = hex_bytes(
+        "570253c0c483a1b16460118e63c155f3684e784ae7d97e8fc3f544128b37fe15075eab5ac31150c8a44253d8525971241bbd7227fcefbae2db4ae71675c56a2e0eb9235136b15ab72f16e707832f3d6ae5b0ba7cca53ae17cb52b3201919eb9d908c16297abd90aa7e00267bc21a9a78116e717d4d76edd44e21cca17e3d592d",
+    );
+    let public_inputs = vec![
+        hex_bytes("a54dc85ac99f851c92d7c96d7318af4100000000000000000000000000000000"),
+        hex_bytes("dbe7c0194edfcc37eb4d422a998c1f5600000000000000000000000000000000"),
+        hex_bytes("a95ac0b37bfedcd8136e6c1143086bf500000000000000000000000000000000"),
+        hex_bytes("d223ffcb21c6ffcb7c8f60392ca49dde00000000000000000000000000000000"),
+        hex_bytes("c07a65145c3cb48b6101962ea607a4dd93c753bb26975cb47feb00d3666e4404"),
+    ];
+    Groth16Fixture { vk, proof, public_inputs }
+}
+
 fn pay_to_script_hash_signature_script(
     redeem_script: Vec<u8>,
     signature_script: Vec<u8>,
@@ -43,6 +73,27 @@ fn pay_to_script_hash_signature_script(
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
     run_script_with_sigscript(script, sigscript)
+}
+
+fn run_compiled_standalone(compiled: &CompiledContract<'_>, function_name: &str) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let mut builder = script_builder();
+    if let Some(selector) = selector_for(compiled, function_name) {
+        builder.add_i64(selector).unwrap();
+    }
+    builder.add_ops(&compiled.script).unwrap();
+    run_standalone_script(builder.drain())
+}
+
+fn run_standalone_script(script: Vec<u8>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::<PopulatedTransaction, SigHashReusedValuesUnsync>::from_script(
+        &script,
+        &reused_values,
+        &sig_cache,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    );
+    vm.execute()
 }
 
 fn run_script_with_tx(
@@ -7703,6 +7754,167 @@ fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
     let mut forged_signature = valid_signature;
     forged_signature[0] ^= 0x01;
     assert!(run(forged_signature).is_err(), "forged ECDSA data signature should fail");
+}
+
+#[test]
+fn g16_verify_lowers_to_groth16_precompile() {
+    let source = r#"
+        contract Groth16(byte[] vk, byte[] proof, byte[32] publicInput0, byte[32] publicInput1) {
+            entrypoint function main() {
+                require(g16.verify(vk, proof, publicInput0, publicInput1));
+            }
+        }
+    "#;
+    let fixture = groth16_fixture();
+    let compiled = compile_contract(
+        source,
+        &[
+            fixture.vk.clone().into(),
+            fixture.proof.clone().into(),
+            fixture.public_inputs[0].clone().into(),
+            fixture.public_inputs[1].clone().into(),
+        ],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let body = script_builder()
+        .add_data_with_push_opcode(&fixture.public_inputs[1])
+        .unwrap()
+        .add_data_with_push_opcode(&fixture.public_inputs[0])
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_data_with_push_opcode(&fixture.proof)
+        .unwrap()
+        .add_data_with_push_opcode(&fixture.vk)
+        .unwrap()
+        .add_data_with_push_opcode(&[ZkTag::Groth16 as u8])
+        .unwrap()
+        .add_op(OpZkPrecompile)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let selector = selector_for(&compiled, "main");
+    assert_eq!(compiled.script, wrap_with_dispatch(body, selector));
+}
+
+#[test]
+fn g16_verify_validates_arity_and_public_input_types() {
+    let fixture = groth16_fixture();
+    let missing_proof = r#"
+        contract Groth16(byte[] vk) {
+            entrypoint function main() {
+                require(g16.verify(vk));
+            }
+        }
+    "#;
+    let missing_proof_err =
+        compile_contract(missing_proof, &[fixture.vk.clone().into()], CompileOptions::default()).expect_err("proof is required");
+    assert!(missing_proof_err.to_string().contains("expects at least 2 arguments"), "unexpected error: {missing_proof_err}");
+
+    let raw_public_input = r#"
+        contract Groth16(byte[] vk, byte[] proof, byte[] publicInput) {
+            entrypoint function main() {
+                require(g16.verify(vk, proof, publicInput));
+            }
+        }
+    "#;
+    let raw_public_input_err = compile_contract(
+        raw_public_input,
+        &[fixture.vk.clone().into(), fixture.proof.clone().into(), fixture.public_inputs[0].clone().into()],
+        CompileOptions::default(),
+    )
+    .expect_err("byte[] public input should fail");
+    assert!(raw_public_input_err.to_string().contains("public input 0 expects byte[32]"), "unexpected error: {raw_public_input_err}");
+
+    let constant_sized_public_input = r#"
+        contract Groth16(byte[] vk, byte[] proof) {
+            int constant INPUT_SIZE = 32;
+
+            entrypoint function main(byte[INPUT_SIZE] publicInput) {
+                require(g16.verify(vk, proof, publicInput));
+            }
+        }
+    "#;
+    compile_contract(
+        constant_sized_public_input,
+        &[fixture.vk.clone().into(), fixture.proof.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("contract constants should satisfy byte[32]");
+}
+
+#[test]
+fn g16_verify_result_is_checked_as_bool() {
+    let fixture = groth16_fixture();
+    let bool_assignment = r#"
+        contract Groth16(byte[] vk, byte[] proof, byte[32] publicInput) {
+            entrypoint function main() {
+                bool ok = g16.verify(vk, proof, publicInput);
+                require(ok);
+            }
+        }
+    "#;
+    compile_contract(
+        bool_assignment,
+        &[fixture.vk.clone().into(), fixture.proof.clone().into(), fixture.public_inputs[0].clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("bool assignment should compile");
+
+    let byte_assignment = r#"
+        contract Groth16(byte[] vk, byte[] proof, byte[32] publicInput) {
+            entrypoint function main() {
+                byte[32] ok = g16.verify(vk, proof, publicInput);
+                require(true);
+            }
+        }
+    "#;
+    let byte_assignment_err = compile_contract(
+        byte_assignment,
+        &[fixture.vk.clone().into(), fixture.proof.clone().into(), fixture.public_inputs[0].clone().into()],
+        CompileOptions::default(),
+    )
+    .expect_err("builtin bool result should not assign to byte[32]");
+    assert!(byte_assignment_err.to_string().contains("variable 'ok' expects byte[32]"), "unexpected error: {byte_assignment_err}");
+}
+
+#[test]
+fn g16_verify_executes_groth16_precompile() {
+    let source = r#"
+        contract Groth16(
+            byte[] vk,
+            byte[] proof,
+            byte[32] publicInput0,
+            byte[32] publicInput1,
+            byte[32] publicInput2,
+            byte[32] publicInput3,
+            byte[32] publicInput4,
+        ) {
+            entrypoint function main() {
+                require(g16.verify(vk, proof, publicInput0, publicInput1, publicInput2, publicInput3, publicInput4));
+            }
+        }
+    "#;
+    let fixture = groth16_fixture();
+    let constructor_args = |public_inputs: &[Vec<u8>]| -> Vec<Expr<'static>> {
+        let mut args = vec![fixture.vk.clone().into(), fixture.proof.clone().into()];
+        args.extend(public_inputs.iter().cloned().map(Into::into));
+        args
+    };
+
+    let compiled =
+        compile_contract(source, &constructor_args(&fixture.public_inputs), CompileOptions::default()).expect("compile succeeds");
+    assert!(run_compiled_standalone(&compiled, "main").is_ok(), "valid Groth16 proof should pass");
+
+    let mut tampered_inputs = fixture.public_inputs.clone();
+    tampered_inputs[0][0] ^= 0x01;
+    let tampered = compile_contract(source, &constructor_args(&tampered_inputs), CompileOptions::default()).expect("compile succeeds");
+    assert!(run_compiled_standalone(&tampered, "main").is_err(), "tampered public input should fail");
 }
 
 #[test]

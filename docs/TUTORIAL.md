@@ -867,6 +867,15 @@ Verify a compact 64-byte ECDSA signature against a 32-byte digest and compressed
 require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
 ```
 
+**`g16.verify(byte[] verifyingKey, byte[] proof, byte[32] ...publicInputs): bool`**
+
+Verify a Groth16 proof with a compressed verifying key, compressed proof, and
+zero or more 32-byte public inputs:
+
+```javascript
+require(g16.verify(vk, proof, publicInput0, publicInput1));
+```
+
 ### Type Conversion Functions
 
 **`byte[](value): bytes`**

@@ -114,6 +114,20 @@ fn parses_structs_and_field_access() {
 }
 
 #[test]
+fn parses_qualified_builtin_call_target() {
+    let input = r#"
+        contract Groth16(byte[] vk, byte[] proof, byte[32] publicInput) {
+            entrypoint function main() {
+                require(g16.verify(vk, proof, publicInput));
+            }
+        }
+    "#;
+
+    let result = parse_source_file(input);
+    assert!(result.is_ok());
+}
+
+#[test]
 fn parses_struct_destructuring() {
     let input = r#"
         contract Structs() {

@@ -509,6 +509,10 @@
         {
           "type": "identifier",
           "named": true
+        },
+        {
+          "type": "qualified_call_target",
+          "named": true
         }
       ]
     }
@@ -1719,6 +1723,10 @@
   {
     "type": "pubkey",
     "named": false
+  },
+  {
+    "type": "qualified_call_target",
+    "named": true
   },
   {
     "type": "require",

@@ -11,6 +11,7 @@ use kaspa_txscript::EngineFlags;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
+use kaspa_txscript::zk_precompiles::tags::ZkTag;
 use std::collections::{HashMap, HashSet};
 
 fn script_builder() -> ScriptBuilder {
@@ -3598,6 +3599,7 @@ fn compile_call_expr<'i>(
         "checkSig" => compile_checksig_call(&mut ctx, args),
         "checkSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
+        "g16.verify" => compile_g16_verify_call(&mut ctx, args),
         _ => compile_unknown_function_call(name),
     }
 }
@@ -3822,6 +3824,28 @@ fn compile_checksigfromstack_call<'i>(
     compile_call_arg_with_context(ctx, &args[2])?;
     ctx.builder.add_op(opcode)?;
     *ctx.stack_depth -= 2;
+    Ok(())
+}
+
+fn compile_g16_verify_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() < 2 {
+        return Err(CompilerError::Unsupported(
+            "g16.verify() expects at least 2 arguments (verifyingKey, proof, ...publicInputs)".to_string(),
+        ));
+    }
+
+    let public_inputs = &args[2..];
+    for public_input in public_inputs.iter().rev() {
+        compile_call_arg_with_context(ctx, public_input)?;
+    }
+    ctx.builder.add_i64(public_inputs.len() as i64)?;
+    *ctx.stack_depth += 1;
+    compile_call_arg_with_context(ctx, &args[1])?;
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_data_with_push_opcode(&[ZkTag::Groth16 as u8])?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpZkPrecompile)?;
+    *ctx.stack_depth -= public_inputs.len() as i64 + 3;
     Ok(())
 }
 

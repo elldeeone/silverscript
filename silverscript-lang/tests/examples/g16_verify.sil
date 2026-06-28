@@ -1,0 +1,5 @@
+contract Groth16Verify(byte[] vk, byte[] proof, byte[32] publicInput0) {
+    entrypoint function main() {
+        require(g16.verify(vk, proof, publicInput0));
+    }
+}
